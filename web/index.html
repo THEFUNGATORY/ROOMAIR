@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="format-detection" content="telephone=no"><title>RoomAir</title>
+<style>*{box-sizing:border-box}body{background:#161618;color:#eee;font:16px system-ui;margin:0;padding:24px}main{max-width:900px;margin:auto}h1{margin-bottom:8px}p{color:#bbb;line-height:1.5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.card{background:#242426;border:1px solid #444;border-radius:18px;padding:16px 20px}.card.alert{background:#7f1d1d;border-color:#ff6b6b}.value{font-size:42px;font-weight:650;margin:8px 0}.unit{font-size:15px;color:#bbb}.status{font-size:13px;color:#bbb;min-height:1.2em}canvas{width:100%;height:60px;display:block;margin-top:8px}.bar{margin:16px 0;padding:10px 14px;border-radius:12px;background:#242426;border:1px solid #444;font-size:14px}.bar.bad{background:#7f1d1d;border-color:#ff6b6b}details{margin-top:20px;background:#242426;border:1px solid #444;border-radius:12px;padding:10px 14px}summary{cursor:pointer;font-weight:600}label{display:block;margin:8px 0;font-size:14px}input,select{background:#18181a;color:#fff;padding:8px;border:1px solid #666;border-radius:8px;width:100%}button{background:#333;color:#fff;border:1px solid #666;border-radius:8px;padding:8px 14px;margin-top:8px}</style></head>
+<body><main><h1 id="title">RoomAir</h1><p>Live readings from Adafruit IO. View only. Readings update about every 30 seconds.</p>
+<div id="bar" class="bar">Loading…</div>
+<div class="grid" id="cards"></div>
+<details><summary>Page settings</summary>
+<label>Adafruit IO username <input id="user"></label>
+<label>Air speed units the board uploads <select id="airUnit"><option value="ft/min">Feet per minute (ft/min)</option><option value="m/s">Meters per second (m/s)</option><option value="mph">Miles per hour (mph)</option></select></label>
+<button id="save">Save</button><p style="font-size:13px">Saved in this browser only. Feeds must be set to Public in Adafruit IO.</p></details>
+</main>
+<script>
+const P=new URLSearchParams(location.search);
+const S={user:P.get('user')||localStorage.getItem('ra_user')||'mushrooms',air:localStorage.getItem('ra_air')||'ft/min'};
+const F=[['CO₂','roomair-co2','ppm',0],['Temperature','roomair-temperature','°F',1],['Humidity','roomair-humidity','%',1],['Air speed ≈','roomair-air-speed',null,1]];
+const cards=document.getElementById('cards');
+F.forEach((f,i)=>cards.insertAdjacentHTML('beforeend',`<div class="card" id="c${i}"><b>${f[0]}</b><div class="value"><span id="v${i}">--</span> <span class="unit" id="u${i}"></span></div><div class="status" id="s${i}"></div><canvas id="g${i}" width="300" height="60"></canvas></div>`));
+document.getElementById('user').value=S.user;document.getElementById('airUnit').value=S.air;
+document.getElementById('save').onclick=()=>{S.user=document.getElementById('user').value.trim()||'mushrooms';S.air=document.getElementById('airUnit').value;localStorage.setItem('ra_user',S.user);localStorage.setItem('ra_air',S.air);refresh();};
+async function feed(key,limit){const r=await fetch(`https://io.adafruit.com/api/v2/${encodeURIComponent(S.user)}/feeds/${key}/data?limit=${limit}`);if(r.status===401||r.status===403)throw new Error('Feed "'+key+'" is not public. Set it to Public in Adafruit IO.');if(r.status===404)throw new Error('Feed "'+key+'" not found for user '+S.user+'.');if(!r.ok)throw new Error('Adafruit IO error '+r.status);const d=await r.json();if(!Array.isArray(d))throw new Error('Unexpected response from Adafruit IO');return d.map(x=>({v:Number(x.value),t:new Date(x.created_at)})).filter(x=>isFinite(x.v)).reverse();}
+function draw(c,pts,color){const x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);if(pts.length<2)return;const vs=pts.map(p=>p.v),lo=Math.min(...vs),hi=Math.max(...vs),span=hi-lo||1;x.strokeStyle=color;x.lineWidth=2;x.beginPath();pts.forEach((p,i)=>{const px=i/(pts.length-1)*(c.width-4)+2,py=c.height-4-(p.v-lo)/span*(c.height-8);i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke();}
+function age(t){const s=Math.round((Date.now()-t)/1000);return s<90?s+' s ago':Math.round(s/60)+' min ago';}
+async function refresh(){const bar=document.getElementById('bar');try{
+ const st=await feed('roomair-status',1),status=st.length?st[st.length-1].v:null;
+ const data=await Promise.all(F.map(f=>feed(f[1],60)));
+ let newest=0;
+ data.forEach((pts,i)=>{const last=pts[pts.length-1],alarm=status>=0&&(status&(1<<i));
+  document.getElementById('v'+i).textContent=last?last.v.toFixed(F[i][3]&&!(i===3&&S.air==='ft/min')?(i===3?2:1):0):'--';
+  document.getElementById('u'+i).textContent=F[i][2]||S.air;
+  document.getElementById('c'+i).classList.toggle('alert',!!alarm);
+  document.getElementById('s'+i).textContent=!last?'No data yet':(alarm?'OUTSIDE LIMITS · ':'')+'Updated '+age(last.t);
+  if(last)newest=Math.max(newest,last.t);
+  draw(document.getElementById('g'+i),pts,alarm?'#ff9d96':'#7fc8ff');});
+ const old=newest&&Date.now()-newest>180000;
+ bar.className='bar'+(old||status===-1||status>0?' bad':'');
+ bar.textContent=status===-2?'CO₂ sensor asleep.':status===-1?'A sensor reading is missing (sensor fault or warming up).':status>0?'ALERT: a reading is outside its limits.':'All readings within limits.';
+ if(old)bar.textContent+=' No new upload for '+age(newest)+'. The board may be offline, on hotspot only, or a phone is on its hotspot.';
+}catch(e){bar.className='bar bad';bar.textContent='Could not load readings: '+e.message;console.error(e);}}
+refresh();setInterval(refresh,30000);
+</script></body></html>
